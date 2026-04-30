@@ -79,16 +79,36 @@ async function updateStrapiEmbedding(modelName, documentId, embeddingValues) {
 
 async function processModel(modelName, populateConfig, mapFn) {
   console.log(`\n🔍 Fetching ${modelName} without embeddings...`);
-  const collection = strapiClient.collection(modelName);
 
-  const { data } = await collection.find({
-    filters: {
-      embedding: {
-        $null: true,
-      },
+  const url = `${process.env.STRAPI_API_URL || "http://localhost:1337/api"}/${modelName}/unembedded`;
+
+  // We need to fetch the un-embedded directly using Strapi REST API with our custom route
+  // Since strapiClient.collection() doesn't support custom paths easily, we use fetch.
+  
+  const tokenRes = await secretsClient.send(new GetSecretValueCommand({ SecretId: process.env.STRAPI_API_TOKEN_SECRET_ARN }));
+  const token = tokenRes.SecretString;
+
+  // Build query string for population
+  const qs = new URLSearchParams();
+  qs.append("pagination[page]", "1");
+  qs.append("pagination[pageSize]", BATCH_SIZE.toString());
+
+  if (Array.isArray(populateConfig)) {
+    populateConfig.forEach((p, i) => qs.append(`populate[${i}]`, p));
+  } else {
+    // For nested object populations like providers, it's easier to just pass the stringified object if supported,
+    // or just let the custom endpoint handle returning the data if we map it properly.
+    // However, qs stringifying nested objects in standard URLSearchParams is complex.
+    // Let's use the standard qs library format or fetch using Strapi client's request method!
+    // Actually, strapiClient.request('get', `/${modelName}/unembedded`, { populate: populateConfig, pagination: ... }) works!
+  }
+
+  // Let's use strapiClient.request
+  const { data } = await strapiClient.request("get", `/${modelName}/unembedded`, {
+    params: {
+      populate: populateConfig,
+      pagination: { page: 1, pageSize: BATCH_SIZE },
     },
-    populate: populateConfig,
-    pagination: { page: 1, pageSize: BATCH_SIZE },
   });
 
   if (!data || data.length === 0) {
