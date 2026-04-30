@@ -1,0 +1,17 @@
+{
+  "name": "lambda-embed-content",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "dependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.1039.0",
+    "@google/genai": "^1.51.0",
+    "@strapi/client": "^1.6.1"
+  }
+}

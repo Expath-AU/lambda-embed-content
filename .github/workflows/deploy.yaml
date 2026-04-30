@@ -1,0 +1,130 @@
+name: Deploy to Lambda
+
+on:
+  push:
+    branches:
+      - '**'
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-southeast-2
+
+jobs:
+  deploy-test:
+    name: Deploy to expath-test
+    runs-on: ubuntu-latest
+    env:
+      ECR_REPO: 695454131506.dkr.ecr.ap-southeast-2.amazonaws.com/test/service/lambda-embed-content
+      DEPLOYMENT_ENV: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Sanitize and shorten branch name
+        id: sanitize
+        run: |
+          BRANCH="${GITHUB_REF##*/}"
+          CLEANED=$(echo "$BRANCH" | tr -cs 'a-zA-Z0-9' '-' | tr '[:upper:]' '[:lower:]')
+          CLEANED=$(echo "$CLEANED" | sed 's/^-*//' | sed 's/-*$//')
+          TAG=$([[ "$BRANCH" == "main" ]] && echo "latest" || echo "$CLEANED")
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "TAG=$TAG" >> $GITHUB_ENV
+
+      - name: Configure AWS credentials for ECR
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::695454131506:role/GitHubIdpRole
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: false
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin $ECR_REPO
+
+      - name: Build, tag, and push Docker image
+        run: |
+          docker build -t test/service/lambda-embed-content .
+          docker tag test/service/lambda-embed-content:latest $ECR_REPO:$TAG
+          docker push $ECR_REPO:$TAG
+
+      - name: Install CDK and dependencies
+        run: |
+          npm install -g aws-cdk
+          cd infra
+          npm ci
+
+      - name: Configure AWS credentials for CDK Deploy
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::851725608259:role/GitHubIdpRole
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: false
+
+      - name: Deploy CDK stack
+        run: |
+          cd infra
+          cdk deploy LambdaEmbedContentStack-test --require-approval never --context env=test --context imageUri=$ECR_REPO:$TAG
+
+  deploy-prod:
+    name: Deploy to expath-prod
+    needs: deploy-test
+    if: ${{ needs.deploy-test.result == 'success' && github.ref_name == 'main' }}
+    runs-on: ubuntu-latest
+    env:
+      ECR_REPO: 695454131506.dkr.ecr.ap-southeast-2.amazonaws.com/prod/service/lambda-embed-content
+      DEPLOYMENT_ENV: prod
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Sanitize and shorten branch name
+        id: sanitize
+        run: |
+          BRANCH="${GITHUB_REF##*/}"
+          CLEANED=$(echo "$BRANCH" | tr -cs 'a-zA-Z0-9' '-' | tr '[:upper:]' '[:lower:]')
+          CLEANED=$(echo "$CLEANED" | sed 's/^-*//' | sed 's/-*$//')
+          TAG=$([[ "$BRANCH" == "main" ]] && echo "latest" || echo "$CLEANED")
+
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "TAG=$TAG" >> $GITHUB_ENV
+
+      - name: Configure AWS credentials for ECR
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::695454131506:role/GitHubIdpRole
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: false
+
+      - name: Login to Amazon ECR
+        run: |
+          aws ecr get-login-password --region $AWS_REGION | \
+            docker login --username AWS --password-stdin $ECR_REPO
+
+      - name: Build, tag, and push Docker image
+        run: |
+          docker build -t prod/service/lambda-embed-content .
+          docker tag prod/service/lambda-embed-content:latest $ECR_REPO:$TAG
+          docker push $ECR_REPO:$TAG
+
+      - name: Install CDK and dependencies
+        run: |
+          npm install -g aws-cdk
+          cd infra
+          npm ci
+
+      - name: Configure AWS credentials for CDK Deploy
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::640921207919:role/GitHubIdpRole
+          aws-region: ${{ env.AWS_REGION }}
+          role-chaining: false
+
+      - name: Deploy CDK stack
+        run: |
+          cd infra
+          cdk deploy LambdaEmbedContentStack-prod --require-approval never --context env=prod --context imageUri=$ECR_REPO:$TAG
