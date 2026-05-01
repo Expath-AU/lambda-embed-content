@@ -29,7 +29,8 @@ jobs:
           BRANCH="${GITHUB_REF##*/}"
           CLEANED=$(echo "$BRANCH" | tr -cs 'a-zA-Z0-9' '-' | tr '[:upper:]' '[:lower:]')
           CLEANED=$(echo "$CLEANED" | sed 's/^-*//' | sed 's/-*$//')
-          TAG=$([[ "$BRANCH" == "main" ]] && echo "latest" || echo "$CLEANED")
+          BASE_TAG=$([[ "$BRANCH" == "main" ]] && echo "latest" || echo "$CLEANED")
+          TAG="${BASE_TAG}-${GITHUB_SHA:0:7}"
 
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "TAG=$TAG" >> $GITHUB_ENV
@@ -88,7 +89,8 @@ jobs:
           BRANCH="${GITHUB_REF##*/}"
           CLEANED=$(echo "$BRANCH" | tr -cs 'a-zA-Z0-9' '-' | tr '[:upper:]' '[:lower:]')
           CLEANED=$(echo "$CLEANED" | sed 's/^-*//' | sed 's/-*$//')
-          TAG=$([[ "$BRANCH" == "main" ]] && echo "latest" || echo "$CLEANED")
+          BASE_TAG=$([[ "$BRANCH" == "main" ]] && echo "latest" || echo "$CLEANED")
+          TAG="${BASE_TAG}-${GITHUB_SHA:0:7}"
 
           echo "tag=$TAG" >> $GITHUB_OUTPUT
           echo "TAG=$TAG" >> $GITHUB_ENV
