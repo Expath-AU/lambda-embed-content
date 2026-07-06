@@ -63,13 +63,16 @@ async function initClients() {
 }
 
 async function updateStrapiEmbedding(modelName, documentId, embeddingValues) {
-  const response = await strapiClient.fetch(`/${modelName}/${documentId}/embedding`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
+  const response = await strapiClient.fetch(
+    `/${modelName}/${documentId}/embedding`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ embedding: embeddingValues }),
     },
-    body: JSON.stringify({ embedding: embeddingValues }),
-  });
+  );
 
   if (!response.ok) {
     const errorText = await response.text();
@@ -85,14 +88,18 @@ async function processModel(modelName, populateConfig, mapFn) {
       populate: populateConfig,
       pagination: { page: 1, pageSize: BATCH_SIZE },
     },
-    { encodeValuesOnly: true }
+    { encodeValuesOnly: true },
   );
 
-  const response = await strapiClient.fetch(`/${modelName}/unembedded?${queryParams}`);
+  const response = await strapiClient.fetch(
+    `/${modelName}/unembedded?${queryParams}`,
+  );
 
   if (!response.ok) {
     const errText = await response.text();
-    throw new Error(`HTTP ${response.status} Failed to fetch unembedded ${modelName}: ${errText}`);
+    throw new Error(
+      `HTTP ${response.status} Failed to fetch unembedded ${modelName}: ${errText}`,
+    );
   }
 
   const { data } = await response.json();
@@ -289,8 +296,8 @@ export const handler = async (event, context) => {
     author: item.author
       ? {
           documentId: item.author.documentId,
-          handle: item.author.handle,
-          title: item.author.title,
+          username: item.author.username,
+          nickname: item.author.nickname,
         }
       : null,
     location: item.location
