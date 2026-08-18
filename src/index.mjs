@@ -310,6 +310,14 @@ export const handler = async (event, context) => {
       : null,
   }));
 
+  // 5. Process Profiles - powers personal profile search (searchPersonal). Unlike the
+  // provider embedding above (which folds in the whole business profile), this is just
+  // username + nickname, since that's all personal profile search ranks/matches on.
+  await processModel("profiles", undefined, (item) => ({
+    username: item.username,
+    nickname: item.nickname,
+  }));
+
   console.log("Finished Embedding Job successfully.");
   return { statusCode: 200, body: "Success" };
 };
