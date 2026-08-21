@@ -10,8 +10,20 @@ import qs from "qs";
 
 const PROJECT_ID = process.env.VERTEX_AI_PROJECT_ID || "expath-app";
 const LOCATION = process.env.VERTEX_AI_LOCATION || "australia-southeast1";
-const MODEL = "text-embedding-004";
+// gemini-embedding-001 (multilingual — the old text-embedding-004 was
+// English-only and buried zh/ar queries) truncated to the platform's 768
+// dims via Matryoshka. Queries embed with the SAME model+dims (Strapi
+// controllers / facade embedKeyword) — mixed-model vectors are noise.
+const MODEL = "gemini-embedding-001";
+const EMBED_CONFIG = { taskType: "RETRIEVAL_DOCUMENT", outputDimensionality: 768 };
 const BATCH_SIZE = 50;
+
+// Truncated Matryoshka outputs are not unit-length; normalize so pgvector's
+// L2 `<->` ordering is equivalent to cosine similarity.
+function normalizeEmbedding(values) {
+  const norm = Math.sqrt(values.reduce((sum, v) => sum + v * v, 0));
+  return norm > 0 ? values.map((v) => v / norm) : values;
+}
 
 let strapiClient = null;
 let aiClient = null;
@@ -118,8 +130,9 @@ async function processMedusaShop() {
       const response = await aiClient.models.embedContent({
         model: MODEL,
         contents: item.text,
+        config: EMBED_CONFIG,
       });
-      const embeddingValues = response.embeddings[0].values;
+      const embeddingValues = normalizeEmbedding(response.embeddings[0].values);
       const saveRes = await fetch(`${baseUrl}/admin/expath-embeddings`, {
         method: "POST",
         headers: {
@@ -205,10 +218,11 @@ async function processModel(modelName, populateConfig, mapFn) {
       const response = await aiClient.models.embedContent({
         model: MODEL,
         contents: textToEmbed,
+        config: EMBED_CONFIG,
       });
 
       if (response.embeddings && response.embeddings.length > 0) {
-        const embeddingValues = response.embeddings[0].values;
+        const embeddingValues = normalizeEmbedding(response.embeddings[0].values);
         await updateStrapiEmbedding(
           modelName,
           item.documentId,
