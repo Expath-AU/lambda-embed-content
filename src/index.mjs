@@ -15,6 +15,7 @@ const BATCH_SIZE = 50;
 
 let strapiClient = null;
 let aiClient = null;
+let medusaAuthHeader = null;
 let initialized = false;
 
 const secretsClient = new SecretsManagerClient({
@@ -58,8 +59,91 @@ async function initClients() {
     location: LOCATION,
   });
 
+  // 3. Medusa admin key (shop products + shops). Optional: without the env
+  // vars the Medusa pass is skipped, so this lambda still deploys against
+  // environments that predate the shop.
+  if (process.env.MEDUSA_API_URL && process.env.MEDUSA_KEYS_SECRET_ARN) {
+    const medusaSecretCmd = new GetSecretValueCommand({
+      SecretId: process.env.MEDUSA_KEYS_SECRET_ARN,
+    });
+    const medusaSecretRes = await secretsClient.send(medusaSecretCmd);
+    const adminKey = JSON.parse(
+      medusaSecretRes.SecretString,
+    ).MEDUSA_ADMIN_API_KEY;
+    if (adminKey) {
+      medusaAuthHeader = `Basic ${Buffer.from(`${adminKey}:`).toString("base64")}`;
+    }
+  }
+
   initialized = true;
   console.log("Clients initialized successfully.");
+}
+
+/**
+ * Shop content (products + shops) lives in MEDUSA, not Strapi, and its
+ * endpoint returns READY-BUILT text — so unlike the Strapi models there is
+ * no mapper here, just embed-and-post:
+ *   GET  {MEDUSA_API_URL}/admin/expath-embeddings?limit=50
+ *          → { items: [{ type: 'product'|'seller', id, text }] }
+ *   POST {MEDUSA_API_URL}/admin/expath-embeddings   { type, id, embedding }
+ */
+async function processMedusaShop() {
+  if (!medusaAuthHeader) {
+    console.log("Medusa not configured — skipping shop embeddings.");
+    return;
+  }
+  const baseUrl = process.env.MEDUSA_API_URL;
+  const listRes = await fetch(
+    `${baseUrl}/admin/expath-embeddings?limit=${BATCH_SIZE}`,
+    {
+      headers: { authorization: medusaAuthHeader },
+    },
+  );
+  if (!listRes.ok) {
+    console.error(
+      `Medusa unembedded fetch failed: ${listRes.status} ${await listRes.text()}`,
+    );
+    return;
+  }
+  const { items } = await listRes.json();
+  if (!items?.length) {
+    console.log("No unembedded shop items found.");
+    return;
+  }
+  console.log(`Found ${items.length} unembedded shop item(s).`);
+
+  let successCount = 0;
+  for (const item of items) {
+    try {
+      const response = await aiClient.models.embedContent({
+        model: MODEL,
+        contents: item.text,
+      });
+      const embeddingValues = response.embeddings[0].values;
+      const saveRes = await fetch(`${baseUrl}/admin/expath-embeddings`, {
+        method: "POST",
+        headers: {
+          authorization: medusaAuthHeader,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          type: item.type,
+          id: item.id,
+          embedding: embeddingValues,
+        }),
+      });
+      if (!saveRes.ok)
+        throw new Error(
+          `save failed: ${saveRes.status} ${await saveRes.text()}`,
+        );
+      successCount++;
+    } catch (error) {
+      console.error(`Failed to embed shop ${item.type} ${item.id}:`, error);
+    }
+  }
+  console.log(
+    `🎉 Finished shop batch: embedded ${successCount}/${items.length}`,
+  );
 }
 
 async function updateStrapiEmbedding(modelName, documentId, embeddingValues) {
@@ -317,6 +401,9 @@ export const handler = async (event, context) => {
     username: item.username,
     nickname: item.nickname,
   }));
+
+  // 6. Process shop products + shops (Medusa; skipped when not configured)
+  await processMedusaShop();
 
   console.log("Finished Embedding Job successfully.");
   return { statusCode: 200, body: "Success" };

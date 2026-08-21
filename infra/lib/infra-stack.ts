@@ -29,7 +29,18 @@ export class LambdaEmbedContentStack extends cdk.Stack {
       `${props.deploymentEnv}/vertex/credentials`
     );
 
+    // Shop embeddings (products + shops) live in Medusa; same shared keys
+    // secret the facade uses ({env}/expath-medusa-keys, JSON key
+    // MEDUSA_ADMIN_API_KEY). Reached through the CloudFront edge like every
+    // other Medusa caller.
+    const medusaKeysSecret = secretsmanager.Secret.fromSecretNameV2(
+      this,
+      "MedusaKeys",
+      `${props.deploymentEnv}/expath-medusa-keys`
+    );
+
     const strapiUrl = `https://cms-v2.${props.deploymentEnv}.expath.com.au/api`;
+    const medusaUrl = `https://medusa.${props.deploymentEnv}.expath.com.au`;
 
     // Format: <accountId>.dkr.ecr.<region>.amazonaws.com/<repoName>:<tag>
     const match = props.imageUri.match(/^(\d+)\.dkr\.ecr\.[^.]+\.amazonaws\.com\/([^:]+):(.*)$/);
@@ -52,6 +63,7 @@ export class LambdaEmbedContentStack extends cdk.Stack {
       timeout: cdk.Duration.minutes(10), // Batch processing needs time
       environment: {
         STRAPI_API_URL: strapiUrl,
+        MEDUSA_API_URL: medusaUrl,
         VERTEX_AI_PROJECT_ID: "expath-app",
         VERTEX_AI_LOCATION: "australia-southeast1",
         // The Lambda will read these secrets at runtime
@@ -61,15 +73,17 @@ export class LambdaEmbedContentStack extends cdk.Stack {
     // Grant Lambda access to read secrets
     strapiSecret.grantRead(embedLambda);
     vertexCredentialsSecret.grantRead(embedLambda);
+    medusaKeysSecret.grantRead(embedLambda);
 
     // We pass the secret ARNs as env vars so the lambda code knows where to fetch them
     embedLambda.addEnvironment("STRAPI_API_TOKEN_SECRET_ARN", strapiSecret.secretArn);
     embedLambda.addEnvironment("VERTEX_CREDENTIALS_SECRET_ARN", vertexCredentialsSecret.secretArn);
+    embedLambda.addEnvironment("MEDUSA_KEYS_SECRET_ARN", medusaKeysSecret.secretArn);
 
     // Give Lambda permission to call Secrets Manager GetSecretValue (grantRead covers it, but ensuring explicit access if needed)
     embedLambda.addToRolePolicy(new iam.PolicyStatement({
       actions: ["secretsmanager:GetSecretValue"],
-      resources: [strapiSecret.secretArn, vertexCredentialsSecret.secretArn],
+      resources: [strapiSecret.secretArn, vertexCredentialsSecret.secretArn, `${medusaKeysSecret.secretArn}-??????`],
     }));
 
     // Trigger every 5 minutes from EventBridge
