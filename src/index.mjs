@@ -159,7 +159,18 @@ async function processMedusaShop() {
   );
 }
 
-async function updateStrapiEmbedding(modelName, documentId, embeddingValues) {
+/**
+ * Hash contract (videos only): when Strapi hands us `{documentId, text, hash}`
+ * we post the hash back and Strapi applies the vector with
+ * `UPDATE … WHERE embedding_desired_hash = hash`. A 409 means the row's
+ * desired text changed while we were embedding — the next poll picks it up
+ * again with the new text, so it is "stale", not a failure. Without a hash
+ * (jobs/properties/providers/profiles, or a Strapi that predates the
+ * contract) the write is unconditional, as before.
+ */
+async function updateStrapiEmbedding(modelName, documentId, embeddingValues, hash) {
+  const body = { embedding: embeddingValues };
+  if (hash) body.hash = hash;
   const response = await strapiClient.fetch(
     `/${modelName}/${documentId}/embedding`,
     {
@@ -167,23 +178,34 @@ async function updateStrapiEmbedding(modelName, documentId, embeddingValues) {
       headers: {
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ embedding: embeddingValues }),
+      body: JSON.stringify(body),
     },
   );
+
+  if (response.status === 409 && hash) return "stale";
 
   if (!response.ok) {
     const errorText = await response.text();
     throw new Error(`HTTP ${response.status}: ${errorText}`);
   }
+  return "ok";
 }
 
-async function processModel(modelName, populateConfig, mapFn) {
+/**
+ * @param {object} [options]
+ * @param {boolean} [options.serverText] — the endpoint may return rows shaped
+ *   `{documentId, text, hash}` (text built server-side). Rows carrying `text`
+ *   are embedded verbatim and acknowledged with their `hash`; rows without
+ *   it (older Strapi) fall back to `mapFn` and an unconditional write.
+ */
+async function processModel(modelName, populateConfig, mapFn, options = {}) {
   console.log(`\n🔍 Fetching ${modelName} without embeddings...`);
 
   const queryParams = qs.stringify(
     {
       populate: populateConfig,
       pagination: { page: 1, pageSize: BATCH_SIZE },
+      limit: BATCH_SIZE,
     },
     { encodeValuesOnly: true },
   );
@@ -199,7 +221,8 @@ async function processModel(modelName, populateConfig, mapFn) {
     );
   }
 
-  const { data } = await response.json();
+  const payload = await response.json();
+  const data = Array.isArray(payload) ? payload : payload?.data;
 
   if (!data || data.length === 0) {
     console.log(`✅ No unembedded ${modelName} found.`);
@@ -209,10 +232,13 @@ async function processModel(modelName, populateConfig, mapFn) {
   console.log(`📄 Found ${data.length} unembedded ${modelName}, processing...`);
 
   let successCount = 0;
+  let staleCount = 0;
   for (const item of data) {
     const { id, createdAt, updatedAt, publishedAt, embedding, ...rest } = item;
-    const payloadToEmbed = mapFn(rest);
-    const textToEmbed = JSON.stringify(payloadToEmbed);
+    const serverText =
+      options.serverText && typeof item.text === "string" ? item.text : null;
+    const hash = serverText && typeof item.hash === "string" ? item.hash : undefined;
+    const textToEmbed = serverText ?? JSON.stringify(mapFn(rest));
 
     try {
       const response = await aiClient.models.embedContent({
@@ -223,13 +249,21 @@ async function processModel(modelName, populateConfig, mapFn) {
 
       if (response.embeddings && response.embeddings.length > 0) {
         const embeddingValues = normalizeEmbedding(response.embeddings[0].values);
-        await updateStrapiEmbedding(
+        const outcome = await updateStrapiEmbedding(
           modelName,
           item.documentId,
           embeddingValues,
+          hash,
         );
-        console.log(`   ✅ Embedded & updated: ${item.documentId}`);
-        successCount++;
+        if (outcome === "stale") {
+          staleCount++;
+          console.log(
+            `   ↻ Stale hash for ${item.documentId} (text changed mid-flight); will retry next run`,
+          );
+        } else {
+          console.log(`   ✅ Embedded & updated: ${item.documentId}`);
+          successCount++;
+        }
       } else {
         console.log(`   ❌ No embedding returned for ${item.documentId}`);
       }
@@ -242,7 +276,7 @@ async function processModel(modelName, populateConfig, mapFn) {
   }
 
   console.log(
-    `🎉 Finished batch for ${modelName}: embedded ${successCount}/${data.length}`,
+    `🎉 Finished batch for ${modelName}: embedded ${successCount}/${data.length}${staleCount ? ` (${staleCount} stale)` : ""}`,
   );
 }
 
@@ -385,7 +419,10 @@ export const handler = async (event, context) => {
     }),
   );
 
-  // 4. Process Videos
+  // 4. Process Videos. Strapi now builds the text server-side
+  // (description + hashtags + transcript_text) and returns
+  // {documentId, text, hash}; the mapper below is only the fallback for a
+  // Strapi that predates that contract (rows without `text`).
   await processModel("videos", ["author", "location"], (item) => ({
     description: item.description,
     visibility: item.visibility,
@@ -406,7 +443,7 @@ export const handler = async (event, context) => {
           country: item.location.country,
         }
       : null,
-  }));
+  }), { serverText: true });
 
   // 5. Process Profiles - powers personal profile search (searchPersonal). Unlike the
   // provider embedding above (which folds in the whole business profile), this is just
